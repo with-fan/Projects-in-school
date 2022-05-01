@@ -1,0 +1,23 @@
+Package: LRBL
+Title: Logistic regression using L1 penality to predict
+Version: 0.0.0.9000
+Authors@R: 
+    person(given = "Fan",
+           family = "Yang",
+           role = c("aut", "cre"),
+           email = "yangdnll@163.com",
+           comment = c(ORCID = "YOUR-ORCID-ID"))
+Description: Logistic regression using L1 penality with the lambda that maximize auc by cross validation to predict.
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.1.1
+Imports: 
+    dplyr,
+    magrittr,
+    tibble,
+    yardstick,
+    purrr
+Depends: 
+    R (>= 2.10)

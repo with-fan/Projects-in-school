@@ -1,0 +1,22 @@
+#' @title  Coronary heart disease data
+#'
+#' @description A coronary heart disease data containing information of age and laboratory examination.
+#' @format A data frame with 1237 rows and 10 variable
+#' \describe{
+#'   \item{age}{age of patient}
+#'   \item{sys_BP}{value of systolic blood pressure}
+#'   \item{dia_BP}{value of diastolic blood pressure}
+#'   \item{totChol}{value of total cholesterol}
+#'   \item{trigl}{value of triglyceride}
+#'   \item{HDL}{value of high density lipoprotein}
+#'   \item{LDL}{value of low density lipoprotein}
+#'   \item{UA}{value of uric acid}
+#'   \item{BS}{value of blood sugar}
+#'   \item{CHD}{whether a person gets coronary heart disease}
+#'}
+"CHD_df"
+
+
+
+
+
