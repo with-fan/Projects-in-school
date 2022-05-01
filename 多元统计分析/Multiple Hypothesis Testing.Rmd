@@ -1,0 +1,521 @@
+---
+title: "Multiple Hypothesis Testing"
+author: "杨帆"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+    toc: yes
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+# Packages
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(cowplot))
+suppressPackageStartupMessages(library(multtest))
+suppressPackageStartupMessages(library(qvalue))
+suppressPackageStartupMessages(library(sda))
+```
+
+
+**Multiple hypothesis testing**
+
+The problem of multiple testing plays an important role in theoretical statistics as well as statistical practice (especially in biomedicine). In this project, you are expected to explain the basic framework of multiple hypothesis testing, and report certain classical methods to control FWER and FDR. In particular, I expect you to exposit **Benjamini-Yekutieli procedure**. The material in Chapter 8 of this book may be appropriate for this project.
+
+
+# The distribution of p-value
+
+* 当所有的检验H0成立时
+
+在同一个总体($N(0,1)$)中随机抽取两个样本,每个样本的样本量为200，分别进行50、100、1000、 5000次t检验。
+
+
+```{r}
+dt1 = rnorm(5000, 0, 1)
+
+t.times = c(50, 100, 1000, 5000)
+my_plot = list()
+count = 1
+for (tt in t.times) {
+  t.df0 = data.frame()
+  for (i in 1:tt) {
+    sample1 = sample(dt1, 200)
+    sample2 = sample(dt1, 200)
+    my_t = t.test(sample1, sample2)
+    t.df0 = rbind(
+      t.df0,
+      data.frame("sim_times" = i, "sim_p" = my_t$p.value)
+    )
+  }
+  my_plot[[count]] = ggplot() +
+    theme_classic() +
+    geom_histogram(
+      data = t.df0, aes(
+        x = sim_p,
+        fill = cut(..x.., c(0, 0.05))
+      ),
+      color = "black", bins = 20, breaks = seq(0, 1, 0.05)
+    ) +
+    scale_fill_manual("", values = c("red", "black")) +
+    xlab("P values") +
+    ylab("Count") +
+    theme(legend.position = "none")
+  count = count + 1
+}
+
+plot_grid(
+  plotlist = my_plot,
+  labels = c(
+    "test=50", "test=100",
+    "test=1000", "test=5000"
+  ), ncol = 2
+)
+```
+
+　　可以看到，P值服从$0-1$的均匀分布的。其中红色部分为$p\leq0.05$，其面积约为5%，即在无效假设成立的情况下，我们按照检验水平$\alpha=0.05$，那么就会有$5%$的可能性出现推断错误，即“I型错误”。
+
+
+* 当有一部分检验H0不成立时(70% H0成立)
+
+每次模拟检验组成：70%的检验从$N (0,1)$抽取两个样本，30%的检验从两个总体$N (0,1) \& N(0.2,1)$分别抽取一个样本
+
+每个样本量都是200，分别进行50、100、1000、5000次t检验。
+
+
+```{r}
+set.seed(111)
+dt1 = rnorm(5000, 0, 1)
+dt2 = rnorm(5000, 0.2, 1)
+
+t.times = c(50, 100, 1000, 5000)
+
+my_plot = list()
+count = 1
+for (tt in t.times) {
+  t.df11 = data.frame()
+  t.df12 = data.frame()
+  for (i in 1 : (tt*0.7)) { 
+    
+    sample1 = sample(dt1, 200)
+    sample2 = sample(dt1, 200)
+    
+    my_t1 = t.test(sample1, sample2)
+    
+    t.df11 = rbind(
+      t.df11,
+      data.frame("sim_times" = i, "sim_p" = my_t1$p.value)
+    )
+  }
+  
+  for (j in (tt*0.7+1):tt) { 
+    
+    sample1 = sample(dt1, 200)
+    sample2 = sample(dt2, 200)
+    
+    my_t2 = t.test(sample1, sample2)
+    
+    t.df12 = rbind(
+      t.df12,
+      data.frame("sim_times" = i, "sim_p" = my_t2$p.value)
+    )
+  }
+  
+  t.df1 = bind_rows(t.df11, t.df12)
+  
+  my_plot[[count]] = ggplot() +
+    theme_classic() +
+    geom_histogram(
+      data = t.df1, aes(
+        x = sim_p,
+        fill = cut(..x.., c(0, 0.05))
+      ),
+      color = "black", bins = 20, breaks = seq(0, 1, 0.05)
+    ) +
+    scale_fill_manual("", values = c("red", "black")) +
+    xlab("P values") +
+    ylab("Count") +
+    theme(legend.position = "none")
+  count = count + 1
+}
+# hist(t.df$t_p)
+plot_grid(
+  plotlist = my_plot,
+  labels = c(
+    "Test = 50", "Test = 100",
+    "Test = 1000", "Test = 5000"
+  ), ncol = 2
+)
+```
+
+　　这时p分布明显不再是均匀分布，而是有大量的较小的p值出现。这时，我们红色面积部分包括了两部分，一部分是假阳性，另一部分是真阳性。
+
+```{r}
+t.q1 = qvalue(t.df1$sim_p)
+ggplot(t.df1) +
+  geom_histogram(
+    data = t.df1,
+    aes(
+      x = sim_p, y = ..density..,
+      fill = cut(..x.., c(0, 0.05))
+    ), color = "black",
+    bins = 20, breaks = seq(0, 1, 0.05)
+  ) +
+  theme_classic() +
+  xlab("P values") +
+  theme(legend.position = "none") +
+  scale_fill_manual("", values = c("red", "white")) +
+  geom_hline(
+    yintercept = t.q1$pi0, linetype = "dashed",
+    color = "red", size = 1
+  ) +
+  geom_rect(
+    data = data.frame(xmin = 0, xmax = 0.05, ymin = 0, ymax = t.q1$pi0),
+    aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+    color = "black", fill = "green"
+  )
+```
+
+　　其中绿色部分是假阳性的概率，红色部分是真阳性。
+
+
+# Procedure(Benjamini-Hochberg)
+
+|                 | H0 is true | H1 is true | Total |
+| :-------------: | :--------: | :--------: | :---: |
+| Not Significant |     TN     |     FN     | TN+FN |
+|   Significant   |     FP     |     TP     | FP+TP |
+|      Total      |   TN+FP    |   FN+TP    |   m   |
+
+TN：true negative   FN：false negative
+FP: false positive  TP: true positive
+
+
+现在考虑一个从小到大排好序的落在拒绝域的p值集合
+
+$$
+p_{1}\leq p_{2}\leq ... \leq p_{m}
+$$
+
+现在的问题是我们需要拒绝多少个p值才会使FDR小于$\alpha$？
+
+给定一个阈值$\tau>0, \tau\in[\hat p_{(k)},\hat p_{(k+1)}]$,那么FP的数量为：$E(FP)\leq\#(TN+FP)*\tau\leq m*\tau$
+
+所以
+$$
+FDR=\frac{FP}{FP+TP}=\frac{FP}{card(\hat R)}\leq\frac{m\hat p_{(\hat k)}}{\hat k}
+$$
+所以需要找到这样一个最大的k，$\hat p_{(\hat k)}$,满足
+$$\hat p_{(\hat k)}\leq\frac{\alpha}{m}\times\hat k$$
+
+
+## Example
+
+对于$m$个独立的假设检验，它们的$P-value$分别为：$p_i,i=1,2,...,m$
+
+（1）按照升序的方法对这些$P-value$进行排序，得到：
+$$
+p_{1}\leq p_{2}\leq ... \leq p_{m}
+$$
+（2）对于给定是统计显著性值$\alpha\in(0,1)$，找到最大的$k$，使得
+$$
+p_{k}\leq \frac{\alpha\times k}{m}
+$$
+（3）对于排序靠前的k个假设检验，认为它们是真阳性 (positive ) 即： $rejectH_0^{i}, 1\leq i\leq k$
+
+<div align=center>![](https://www.zhihu.com/equation?tex=%5Cbegin%7Barray%7D%7Bc%7Cl%7D+%5Chline+Gene+%26+p-value+%5C%5C+%5Chline+G1+%26+P1+%3D0.053+%5C%5C+%5Chline+G2+%26+P2+%3D0.001+%5C%5C+%5Chline+G3%09%26+P3+%3D0.045+%5C%5C+%5Chline+G4%09%26+P4+%3D0.03+%5C%5C+%5Chline+G5+%26+P5+%3D0.02+%5C%5C+%5Chline+G6+%26+P6+%3D0.01+%5C%5C+%5Chline+%5Cend%7Barray%7D+%5C%2C+%5CRightarrow+%5C%2C+%5Cbegin%7Barray%7D%7Bc%7Cl%7D+%5Chline+Gene+%26+p-value+%5C%5C+%5Chline+G2%09%26+P%281%29+%3D0.001+%5C%5C+%5Chline+G6%09%26+P%282%29+%3D0.01+%5C%5C+%5Chline+G5%09%26+P%283%29+%3D0.02+%5C%5C+%5Chline+G4%09%26+P%284%29+%3D0.03+%5C%5C+%5Chline+G3%09%26+P%285%29+%3D0.045+%5C%5C+%5Chline+G1%09%26+P%286%29+%3D0.053+%5C%5C+%5Chline+%5Cend%7Barray%7D)
+</div>
+
+$\alpha = 0.05$
+
+> $P(4)=0.03<0.05\times\frac{4}{6}= 0.033$
+>
+> $P(5)=0.045>0.05\times\frac{5}{6}=0.041$
+>
+> 因此最大的k为4，此时可以得出：在FDR<0.05的情况下，G2，G6，G5和G4存在差异表达。
+
+可以计算出$q-value:$
+$$
+p(k)\leq\frac{\alpha\times k}{m}\Longrightarrow \frac{p_{(k)}\times m}{k}\leq \alpha
+$$
+
+| Gene |        P        | q-value |
+| :--: | :-------------: | :-----: |
+| $G2$ | $p(1)=0.001$ |  0.006  |
+| $G6$ | $p(2)=0.01$  |  0.03   |
+| $G5$ | $p(3)=0.02$  |  0.04   |
+| $G4$ | $p(4)=0.03$  |  0.045  |
+| $G3$ | $p(5)=0.045$ |  0.053  |
+| $G1$ | $p(6)=0.047$ |  0.053  |
+
+
+
+根据$q-value$的计算公式，我们可以很明显地看出：
+
+
+$$
+q^{i}=p^i_{(k)}\times\frac{Total~~Gene~~Number}{rank(p^{(i)})}=p^i_{(k)}\times\frac{m}{k}
+$$
+即，根据该基因p值的排序对它进行放大，越靠前放大的比例越大，越靠后放大的比例越小，排序最靠后的基因的p值不放大，等于它本身。
+
+我们也可以从可视化的角度来看待这个问题：
+
+对于给定的$\alpha\in(0,1)$,设函数$y=\frac{\alpha}{m}x~~~~~(x =1,2,...,m)$，画出这条线，另外对于每个基因，它在图上的坐标为$rank(p^{(i)}_{(k)}, p^{(i)}_{(k)}=(k,p^{(i)}_{(k)}))$，图如下：
+
+
+```{r}
+dat = data.frame(
+  index = 1:6,
+  p.value = c(0.001, 0.01, 0.02, 0.03, 0.045, 0.053),
+  thresh = 0.05 * (1:6) / 6
+)
+
+
+ggplot(dat, aes(x = index, y = p.value)) +
+  geom_point() +
+  geom_path(aes(y = thresh, color = (p.value <= thresh)),
+    show.legend = F
+  ) +
+  geom_text(
+    x = 5, y = 0.03, label = "y = alpha*x/m",
+    color = "red", size = 5
+  )
+```
+$$
+y=\frac{\alpha}{m}\times x
+$$
+
+
+通过设置 $\alpha$ 可以改变图中直线的斜率，  $\alpha$越大，则直线的斜率越大，落在直线下方的点就越多，通过$FDR$检验的基因也就越多，反之，直线的斜率越小，落在直线下方的点就越少，通过$FDR$检验的基因也就越少
+
+当固定 $\alpha$ ，而统计检验次数$m$增加时，这条直线的斜率变小，落在直线下方的点就越少，通过$FDR$检验的基因也就越少
+
+
+
+# Bonferroni & Benjamini-Hochberg & Benjamini-Yekutieli procedure
+
+```{r}
+data(golub) # load the data
+```
+
+```{r}
+golub1 = golub[, 1:27]
+golub2 = golub[, 28:38]
+```
+
+```{r}
+m = 3051
+p = rep(0, m)
+
+# compute the p-values with a two-sample t-test
+for (i in 1:m) {
+  p[i] = t.test(golub1[i, ], golub2[i, ])$p.value
+}
+
+ggplot(NULL, aes(p)) +
+  geom_histogram(binwidth = 0.01, fill = "white", colour = "red") +
+  ggtitle("p.value的直方图")
+```
+
+
+```{r}
+k_bonf = sum(p <= 0.05 / m) # number of p-values rejected
+k_bonf
+```
+
+
+
+* Benjamini-Hochberg procedure
+
+```{r}
+k_BH = which(sort(p) <= 0.05 * (1:m) / m) %>% max() # number of p-values rejected
+k_BH
+```
+
+* Benjamini-Yekutieli procedure
+
+```{r}
+H_m = 0
+for (i in 1:3051) {
+  H_m = H_m + 1 / i
+}
+
+k_BY = which(sort(p) <= 0.05 * (1:m) / (m * H_m)) %>% max() # number of p-values rejected
+k_BY
+```
+
+
+```{r}
+df = data.frame(
+  index = 1:750,
+  p.value = sort(p)[1:750],
+  thresh_BH = 0.05 * (1:750) / m,
+  thresh_BY = 0.05 * (1:750) / (m * H_m),
+  thresh_bonf = 0.05 / m
+)
+
+ggplot(df, aes(x = index, y = p.value)) +
+  geom_point(size = 0.5) +
+  geom_path(aes(y = thresh_BH, color = (index < k_BH)),
+    show.legend = F
+  ) +
+  geom_path(aes(y = thresh_BY, color = (index < k_BY)),
+    show.legend = F
+  ) +
+  geom_path(aes(y = thresh_bonf, color = (p.value < thresh_bonf)),
+    show.legend = F
+  ) +
+  scale_color_manual(values = c("red", "green")) +
+  geom_text(
+    x = 600, y = 0.01, label = "Benjamini-Hochberg",
+    color = "blue", size = 5
+  ) +
+  geom_text(
+    x = 500, y = 0.002, label = "Benjamini-Yekutieli",
+    color = "red", size = 5
+  ) +
+  geom_text(
+    x = 500, y = 0, label = "Bonferroni",
+    color = "#56B4E9", size = 5
+  ) +
+  xlab("Index i") +
+  ylab("p-value")
+```
+
+
+
+# Adaptive Procedures
+
+　　Estimating $m_0 = \pi_0m$, the number of true null hypotheses, can improve FDR procedures by making them more powerful. When replacing $m$ by $m_0$ in the BH or the BL algorithm we can control the FDR at exactly the level of q.
+
+m个p值包含了信息关于$\pi_0=m_0/m$
+
+考虑固定一个拒绝域$p-value\leq t$
+$$
+FDR(t)\approx\frac{E(FP(t))}{E(S(t))}=\frac{tm_0}{E[\#\{p_i\leq t\}]}\\
+\hat{FDR(t)}\approx\frac{tm_0}{\#\{p_i\leq t\}}=\frac{t\pi_0m}{\#\{p_i\leq t\}}
+$$
+
+$$
+\pi_0=\frac{m_0}{m}
+$$
+
+$\pi_0$的估计,越大的p值越有可能是因为零假设为真
+
+引入一个调节的参数，$0<\lambda<1$
+$$
+E(\frac{\#\{p_i>\lambda\}}{m})\geq(1-\lambda)\pi_0\\
+\hat\pi_0=\frac{\#\{p_i>\lambda\}}{m(1-\lambda)}
+$$
+选最优的$\lambda$
+$$
+\lambda_{best}=arg~min_{\lambda\in[0,1]}(E[\{\hat FDR_{\lambda}(t)-FDR(t)\}^2])
+$$
+给定$\lambda$的一系列取值，使用bootstrap方法计算$\lambda_{best}$，即固定$\lambda$，对于$b=1,...,B$，可以使用bootstrap方法估计$\hat FDR_{\lambda}(t)$，估计为$\hat{FDR_\lambda^{*b}(t)}$
+
+然而$FDR(t)$未知
+
+对于任意的$\lambda$：
+$$
+E\{FDR_{\lambda}(t)\}\geq min_{\lambda^\prime}E[FDR_{\lambda^\prime}(t)\}]\geq FDR(t)
+$$
+所以
+$$
+\hat{MSE(\lambda)}=\frac{1}{B}\sum_{b=1}^B[\hat{FDR_\lambda^{*b}(t)}-min_{\lambda^\prime}E[FDR_{\lambda^\prime}(t)\}]^2
+$$
+![](E:/R_Project/R_Course/Reconciliation.jpg)
+
+
+
+**Case study: differential gene expression**
+
+```{r}
+data(hedenfalk)
+names(hedenfalk)
+```
+
+```{r}
+null_stats = hedenfalk$stat0
+obs_stats = hedenfalk$stat
+
+pvalues = empPvals(
+  stat = obs_stats, stat0 = null_stats,
+  pool = FALSE
+)
+```
+
+```{r}
+hist(hedenfalk$p, nclass = 20)
+```
+
+```{r}
+qobj = qvalue(p = hedenfalk$p)
+# names(qobj)
+```
+
+```{r}
+summary(qobj)
+```
+
+```{r}
+qobj$pi0
+
+pi0est(p = hedenfalk$p, lambda = seq(0.1, 0.9, 0.1), pi0.method = "smoother")
+# names(pi0)
+```
+
+
+给定$\alpha$，求最大的P值
+```{r}
+max(qobj$pvalues[qobj$qvalues <= 0.05])
+```
+
+
+事先指定$\alpha=0.1$
+
+```{r}
+qobj_fdrlevel = qvalue(p = hedenfalk$p, fdr.level = 0.1)
+# names(qobj_fdrlevel)
+
+qobj_fdrlevel$significant %>% sum()
+```
+
+
+```{r}
+localFDR = qobj$lfdr
+# localFDR = lfdr(p = hedenfalk$p)
+```
+
+
+```{r}
+plot(qobj)
+```
+
+
+$\lambda$越大，偏差越小，同时方差会越大。
+
+```{r}
+hist(qobj)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

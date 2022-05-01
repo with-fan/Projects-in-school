@@ -1,0 +1,447 @@
+---
+title: "PROJECT"
+author:
+  - 杨帆 2020103661 流行病与卫生统计学
+documentclass: ctexart
+keywords:
+  - 中文
+  - R Markdown
+output:
+  rticles::ctex:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+******************************
+
+大部分为代码结果，文字部分未超过三页
+
+********************************
+
+
+```{r,echo = FALSE}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidymodels))
+suppressPackageStartupMessages(library(UMA))
+suppressPackageStartupMessages(library(quadprog))
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(Rfast))
+suppressPackageStartupMessages(library(SOIL))
+suppressPackageStartupMessages(library(BMA))
+suppressPackageStartupMessages(library(glmnet))
+suppressPackageStartupMessages(library(ncvreg))
+suppressPackageStartupMessages(library(mgcv))
+suppressPackageStartupMessages(library(mvtnorm))
+suppressPackageStartupMessages(library(Matrix))
+suppressPackageStartupMessages(library(ModelMetrics))
+suppressPackageStartupMessages(library(mda))
+suppressPackageStartupMessages(library(ipred))
+suppressPackageStartupMessages(library(lars))
+suppressPackageStartupMessages(library(glmvsd))
+```
+
+```{r,echo = FALSE}
+load("C:\\Users\\asus\\Desktop\\dataset.rda")
+df = dataset %>% 
+  as_tibble()
+```
+
+# predict y values of the last 150 cases
+
+```{r,echo = FALSE, results = "hide"}
+df_train = df[1:150,]
+df_pred = df[151:300,]
+
+# 将训练数据划分为10折
+set.seed(2020)
+df_vfold = vfold_cv(df_train,v=10,repeats=1)
+df_vfold
+```
+
+
+```{r,echo = FALSE, results = "hide"}
+lr_rec = df_train %>%
+  recipe(y ~ .)
+
+lr_spec =
+  linear_reg(penalty = tune(),mixture = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+
+lr_wfl = 
+  workflow() %>%
+  add_recipe(lr_rec) %>%
+  add_model(lr_spec)
+lr_wfl
+```
+
+```{r,echo = FALSE}
+# 创建调节参数的格点集
+lr_grid <- expand.grid(
+  penalty = 10 ^ seq(-3, -1, length = 20), 
+  mixture = (0:5) / 5)
+
+```
+
+```{r, message = FALSE,echo = FALSE, include = FALSE}
+# 训练模型及调参
+lr_tune = 
+  lr_wfl %>% 
+  tune_grid(df_vfold,
+            grid = lr_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = yardstick::metric_set(yardstick::rmse))
+
+autoplot(lr_tune)
+```
+
+
+```{r,echo = FALSE}
+show_best(lr_tune, metric = "rmse", n = 1)
+```
+
+
+```{r,echo = FALSE}
+lr_best = select_best(lr_tune)
+lr_mod_final = finalize_model(lr_spec, lr_best)
+
+lr_fit = lr_mod_final %>% 
+  fit(y ~ ., data = df_train)
+
+y_pred = lr_fit %>% 
+  predict(df_pred) %>% 
+  dplyr::rename(y = .pred)
+
+
+save(y_pred, file = "YangFan.rda")
+```
+
+　　采用线性回归对前150个数据点建模，十折交叉验证通过网格搜索法调参选取参数，然后选取使得mean squared error最小的参数，交叉验证mse为1.63，然后在前150个数据点训练得到最终的模型，最后用最终训练的模型预测后150个数据点的y。
+
+参数详情：
+
+* penalty: The total amount of regularization in the model. Note that this must be zero for some engines.
+
+* mixture: The mixture amounts of different types of regularization（$L_0$与$L_1$）.
+
+# identify the most important variables
+
+```{r, echo = FALSE}
+x = df_train[,1:500] %>% as.matrix()
+y = df_train[,501] %>% as.matrix()
+```
+
+## list variables that you think are most important. 
+
+　　我认为x30，x60，x32最重要。
+
+
+代码结果如下：
+
+### lasso
+
+变量选择结果
+
+```{r,echo = FALSE}
+# lasso
+
+# 交叉验证
+set.seed(2021)
+cv_lasso = cv.glmnet(x, y, alpha=1)
+# 模型系数
+fit_lasso = glmnet(x, y, alpha=1,lambda = cv_lasso$lambda.min)
+coef_lasso = fit_lasso$beta
+
+# 指定model check
+coef_lasso[abs(coef_lasso) > 0] = 1
+check_lasso = coef_lasso %>% as.numeric()
+
+which(check_lasso > 0)
+
+lasso_ARM = glmvsd(x, y, model_check = check_lasso,
+                  family = "gaussian", method = "union",
+                  weight_type = "ARM", prior = TRUE)
+
+lasso_BIC = glmvsd(x , y, model_check = check_lasso,
+                  family = "gaussian", method = "union", 
+                  weight_type = "BIC", prior = TRUE)
+
+res_lasso_ARM = c(lasso_ARM$Fmeasure, lasso_ARM$Gmeasure, 
+  lasso_ARM$VSD, lasso_ARM$VSD_minus, lasso_ARM$VSD_plus)
+
+res_lasso_BIC = c(lasso_BIC$Fmeasure, lasso_BIC$Gmeasure, 
+  lasso_BIC$VSD, lasso_BIC$VSD_minus, lasso_BIC$VSD_plus)
+
+```
+
+交叉验证mse
+
+```{r, echo = FALSE}
+cv_lasso$cvm[which.min(cv_lasso$cvm)]
+```
+
+stability test
+```{r, echo = FALSE}
+set.seed(2021)
+stability.test(x, y, method = "seq", penalty = "LASSO",
+                           nrep = 100,remove = 0.05, nfolds = 10)
+```
+
+
+
+
+### SCAD
+
+变量选择结果
+
+```{r,echo = FALSE}
+# 交叉验证
+set.seed(2021)
+cv_SCAD = cv.ncvreg(x, y, method="SCAD")
+# 模型系数
+fit_SCAD = ncvreg(x, y, method = "SCAD")
+
+coef_SCAD = coef(fit_SCAD, lambda = cv_SCAD$lambda.min)[-1]
+
+
+# 指定model check
+coef_SCAD[abs(coef_SCAD) > 0] = 1
+check_SCAD = coef_SCAD %>% as.numeric()
+
+which(check_SCAD > 0)
+
+SCAD_ARM = glmvsd(x, y, model_check = check_SCAD,
+                  family = "gaussian", method = "union",
+                  weight_type = "ARM", prior = TRUE)
+
+SCAD_BIC = glmvsd(x , y, model_check = check_SCAD,
+                  family = "gaussian", method = "union", 
+                  weight_type = "BIC", prior = TRUE)
+
+res_SCAD_ARM = c(SCAD_ARM$Fmeasure , SCAD_ARM$Gmeasure , 
+  SCAD_ARM$VSD, SCAD_ARM$VSD_minus, SCAD_ARM$VSD_plus)
+
+res_SCAD_BIC = c(SCAD_BIC$Fmeasure ,SCAD_BIC$Gmeasure ,
+  SCAD_BIC$VSD, SCAD_BIC$VSD_minus, SCAD_BIC$VSD_plus)
+```
+
+交叉验证mse
+
+```{r, echo = FALSE}
+cv_SCAD$cve[which.min(cv_SCAD$cve)]
+```
+
+stability test
+```{r, echo = FALSE}
+set.seed(2021)
+stability.test(x, y, method = "seq", penalty = "SCAD",
+                          nrep = 100,remove = 0.05,nfolds = 10)
+```
+
+### MCP
+
+变量选择结果
+
+```{r,echo = FALSE}
+# 交叉验证
+set.seed(2021)
+cv_MCP = cv.ncvreg(x, y)
+# 模型参数
+fit_MCP = ncvreg(x, y)
+coef_MCP = coef(fit_MCP, lambda = cv_MCP$lambda.min)[-1]
+# 指定model check
+coef_MCP[abs(coef_MCP) > 0] = 1
+check_MCP = coef_MCP %>% as.numeric()
+
+which(check_MCP > 0)
+
+MCP_ARM = glmvsd(x, y, model_check = check_MCP,
+                 family = "gaussian", method = "union",
+                 weight_type = "ARM", prior = TRUE)
+
+MCP_BIC = glmvsd(x , y, model_check = check_MCP,
+                 family = "gaussian", method = "union", 
+                 weight_type = "BIC", prior = TRUE)
+
+res_MCP_ARM = c(MCP_ARM$Fmeasure, MCP_ARM$Gmeasure , 
+  MCP_ARM$VSD, MCP_ARM$VSD_minus, MCP_ARM$VSD_plus)
+
+res_MCP_BIC = c(MCP_BIC$Fmeasure ,MCP_BIC$Gmeasure ,
+  MCP_BIC$VSD, MCP_BIC$VSD_minus, MCP_BIC$VSD_plus)
+```
+
+交叉验证mse
+
+```{r, echo = FALSE}
+cv_MCP$cve[which.min(cv_MCP$cve)]
+```
+
+stability test
+```{r,echo = FALSE}
+set.seed(2021)
+stability.test(x, y, method = "seq", penalty = "MCP", 
+                         nrep = 100, remove = 0.05, nfolds = 10)
+```
+
+lasso、SCAD、MCP三种方法模型选择诊断结果
+
+```{r,echo = FALSE}
+rbind(res_lasso_ARM, res_lasso_BIC, res_SCAD_ARM,
+      res_SCAD_BIC,res_MCP_ARM, res_MCP_BIC) %>% 
+  as.data.frame() %>% 
+  dplyr::rename(Fmeasure = V1, Gmeasure = V2, VSD = V3,
+                VSD_minus = V4, VSD_plus = V5) %>% 
+  rownames_to_column(var = "res") %>% 
+  knitr::kable()
+```
+
+### SOIL importance
+（这里展示权重降序排列前十个变量，其余展示在网页版rmarkdown）
+```{r, echo = FALSE}
+set.seed(2020)
+
+v_ARM = SOIL(x, y, family = "gaussian", method = "union",
+              weight_type = "ARM", prior = TRUE)
+
+# compute SOIL using BIC
+v_BIC = SOIL(x, y, family = "gaussian", method = "union", 
+             weight_type = "BIC")
+# compute SOIL using AIC
+v_AIC = SOIL(x, y, family = "gaussian", method = "union",
+              weight_type = "AIC", prior = TRUE)
+
+arm_imp = v_ARM$importance %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = x1:x500, names_to = "Variables", 
+               values_to = "importance") %>% 
+  arrange(desc(importance)) %>% 
+  head(10)
+
+BIC_imp = v_BIC$importance %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = x1:x500, names_to = "Variables", 
+               values_to = "importance") %>% 
+  arrange(desc(importance)) %>% 
+  head(10)
+
+AIC_imp = v_AIC$importance %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = x1:x500, names_to = "Variables", 
+               values_to = "importance") %>% 
+  arrange(desc(importance)) %>% 
+  head(10)
+```
+
+ARM加权结果
+
+```{r,echo = FALSE}
+arm_imp
+```
+
+BIC加权结果
+
+```{r,echo = FALSE}
+BIC_imp
+```
+
+AIC加权结果
+
+```{r,echo = FALSE}
+AIC_imp
+```
+
+
+　　由上可看到lasso、SCAD、MCP经过交叉验证后变量选择的结果：lasso选了29个变量，而SCAD、MCP选了4个变量。
+
+　　从交叉验证mse角度看，lasso的mse是最小的，为2.69，而SCAD和MCP相同，为3.37，lasso选的变量过多;stability test检验，采用随机去掉5%的样本点来考查三种方法的稳定性，可以看出lasso是21.57，SCAD是13.93，MCP是5.88，即lasso、SCAD、SCAD多选与少选加一起平均21.57，13.93，5.88个，也就是说以上三种方法具有较大的不稳定性。
+
+　　三个方法比较而言，SCAD、MCP变量选择的F-measure和G-measure（二者是recall和precision的综合评估指标）大于0.8，而且VSD的值ARM加权和BIC加权结果分别为1.26和0.79，比lasso好很多。从ARM、BIC加权结果可以看出，SCAD和MCP多选了一个变量，基本不存在少选的问题。
+
+　　考虑到SOIL importance，从三种加权方法结果可以看出，三种加权方法变量重要性值相对较大的都有x30，x60，x32，x31；SCAD、MCP变量选择中都有x30，x60，x32，与SOIL结果一致，考虑到SCAD、MCP变量选择结果评估中不存在少选变量问题，所以这里选取x30，x60，x32作为最重要的变量。
+
+　　所以，这里我认为最重要的变量是x30，x60，x32。
+
+## final statistical model with estimated parameters
+
+```{r,echo = FALSE}
+# 针对选取变量建模型
+lr_mod = lm(y ~ x30 + x32 + x60, data = df_train)
+
+```
+
+最后模型为
+$$
+\hat y = -10.261+2.673x_{30}+1.832x_{60}+1.297x_{32}
+$$
+
+
+## model averaging methods and compare estimates of the coefficients of the variables 
+
+```{r,echo = FALSE}
+set.seed(2021)
+g_SAIC = gma_h(x = x, y, candidate='H4',method='SAIC',
+           psi=1, prior=TRUE)
+
+g_L1_ARM = gma_h(x = x, y, candidate='H4',method='L1-ARM',
+           psi=1, prior=TRUE)
+
+g_PMA = gma_h(x = x, y, candidate='H4',method='PMA')
+```
+
+```{r, message = FALSE,echo = FALSE}
+lr_inf = lr_mod$coefficients %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = "Variables") %>% 
+  dplyr::rename(linear_reg = ".")
+
+var_name = c("(Intercept)", "x30", "x32", "x60")
+
+SAIC_inf = dplyr::bind_cols(var_name,
+                            g_SAIC$beta_w[c(1,31,33,61)]) %>% 
+  as.data.frame() %>% 
+  dplyr::rename(Variables = "...1", SAIC = "...2")
+
+L1_ARM_inf = bind_cols(var_name, 
+                       g_L1_ARM$beta_w[c(1,31,33,61)]) %>% 
+  as.data.frame() %>% 
+  dplyr::rename(Variables = "...1", L1_ARM = "...2")
+
+PMA_inf = bind_cols(var_name, g_PMA$beta_w[c(1,31,33,61)]) %>% 
+  as.data.frame() %>% 
+  dplyr::rename(Variables = "...1", PMA = "...2")
+```
+
+```{r,echo = FALSE}
+inner_join(lr_inf, inner_join(SAIC_inf, 
+                              inner_join(L1_ARM_inf, PMA_inf,
+                                         by = "Variables"),
+                              by = "Variables"),
+           by = "Variables") %>% 
+  knitr::kable()
+```
+
+　　我认为权重选取L1-ARM的模型平均结果更可靠。
+
+　　从上面表格可以看出，L1-ARM的系数估计与(b)中的final model系数估计最接近，SAIC、PMA在x32、x60系数估计与final model差别过大；ARM通过加权的结果一般情况下会更好。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

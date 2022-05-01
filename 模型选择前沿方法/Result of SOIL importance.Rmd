@@ -1,0 +1,113 @@
+---
+title: "Result of SOIL importance"
+author: "杨帆 2020103661"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+```{r,echo = FALSE}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidymodels))
+suppressPackageStartupMessages(library(UMA))
+suppressPackageStartupMessages(library(quadprog))
+suppressPackageStartupMessages(library(MASS))
+suppressPackageStartupMessages(library(Rfast))
+suppressPackageStartupMessages(library(SOIL))
+suppressPackageStartupMessages(library(BMA))
+suppressPackageStartupMessages(library(glmnet))
+suppressPackageStartupMessages(library(ncvreg))
+suppressPackageStartupMessages(library(mgcv))
+suppressPackageStartupMessages(library(mvtnorm))
+suppressPackageStartupMessages(library(Matrix))
+suppressPackageStartupMessages(library(ModelMetrics))
+suppressPackageStartupMessages(library(mda))
+suppressPackageStartupMessages(library(ipred))
+suppressPackageStartupMessages(library(lars))
+suppressPackageStartupMessages(library(glmvsd))
+```
+
+```{r,echo = FALSE}
+load("C:\\Users\\asus\\Desktop\\dataset.rda")
+df = dataset %>% 
+  as_tibble()
+```
+
+
+
+```{r,echo = FALSE}
+df_train = df[1:150,]
+
+x = df_train[,1:500] %>% as.matrix()
+y = df_train[,501] %>% as.matrix()
+
+
+set.seed(2020)
+
+v_ARM = SOIL(x, y, family = "gaussian", method = "union",
+              weight_type = "ARM", prior = TRUE)
+
+# compute SOIL using BIC
+v_BIC = SOIL(x, y, family = "gaussian", method = "union", 
+             weight_type = "BIC")
+# compute SOIL using AIC
+v_AIC = SOIL(x, y, family = "gaussian", method = "union",
+              weight_type = "AIC", prior = TRUE)
+
+arm_imp = v_ARM$importance %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = x1:x500, names_to = "Variables", 
+               values_to = "importance") %>% 
+  arrange(desc(importance))
+
+BIC_imp = v_BIC$importance %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = x1:x500, names_to = "Variables", 
+               values_to = "importance") %>% 
+  arrange(desc(importance))
+
+AIC_imp = v_AIC$importance %>% 
+  as.data.frame() %>% 
+  pivot_longer(cols = x1:x500, names_to = "Variables", 
+               values_to = "importance") %>% 
+  arrange(desc(importance))
+```
+
+ARM加权
+```{r,echo = FALSE}
+DT::datatable(
+  arm_imp, extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
+  )
+)
+
+```
+
+BIC加权
+```{r,echo = FALSE}
+DT::datatable(
+  BIC_imp, extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
+  )
+)
+```
+
+AIC加权
+```{r,echo = FALSE}
+DT::datatable(
+  AIC_imp, extensions = 'Buttons', options = list(
+    dom = 'Bfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
+  )
+)
+```
+

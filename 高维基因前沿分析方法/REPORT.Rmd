@@ -1,0 +1,548 @@
+---
+title: "REPORT"
+author:
+  - 杨帆 2020103661 流行病与卫生统计学
+documentclass: ctexart
+keywords:
+  - 中文
+  - R Markdown
+output:
+  rticles::ctex:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(rstatix)) # marginal analysis
+suppressPackageStartupMessages(library(forecast))# box-cox transformation
+suppressPackageStartupMessages(library(glmnet))  # lasso
+suppressPackageStartupMessages(library(ncvreg))  # MCP
+suppressPackageStartupMessages(library(L0Learn)) # L_0
+suppressPackageStartupMessages(library(factoextra)) # 可视化kmeans聚类
+suppressPackageStartupMessages(library(grpreg))  # group lasso/MCP
+
+```
+
+----------------------------------
+
+* 基因名按照顺序命名：Has1:Has2000。
+
+---------------------------------
+
+```{r}
+# 基因命名：我按照顺序命名的，Has1:Has2000
+dat = read.table("E:\\R_Project\\R_homework\\高维基因数据前沿分析方法\\I2000.txt") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  set_names(str_c("Has", 1:2000))
+
+rownames(dat) = NULL
+
+# 正常组织为0， 肿瘤组织为1
+tissue = read.table("E:\\R_Project\\R_homework\\高维基因数据前沿分析方法\\tissues.txt") %>% 
+  set_names("tissues") %>% 
+  mutate( tissues = ifelse( tissues > 0, 0, 1))
+```
+
+# 正态性检验
+```{r}
+test_outcome = dat %>% 
+  map_df(~ shapiro_test(.)) %>% 
+  filter(p.value <= 0.05)
+
+
+
+ggplot(test_outcome) +
+  geom_histogram(aes(x = p.value, fill = cut(..x.., c(0, 0.05))),
+      color = "black", bins = 20, breaks = seq(0, 0.05, 0.001),
+      show.legend = F)
+
+
+test_outcome %>% 
+  mutate(qvalue = p.adjust(p.value, method = "BY")) %>% 
+  filter(qvalue <= 0.05) %>% 
+  dim()
+```
+
+
+有1912个变量在$\alpha=0.05$水准下拒绝原假设，可认为不服从正态分布。
+
+在FDR=0.05下，有1727个基因不符合正态分布。
+
+
+
+## box-cox数据转换
+
+```{r}
+dt = dat %>% 
+  map_df( ~ BoxCox(., lambda = "auto"))
+
+test_outcome_lat = dt %>% 
+  map_df(~ shapiro_test(.)) %>% 
+  filter(p.value <= 0.05)
+
+ggplot(test_outcome_lat) +
+  geom_histogram(aes(x = p.value, fill = cut(..x.., c(0, 0.05))),
+      color = "black", bins = 20, breaks = seq(0, 0.05, 0.001),
+      show.legend = F)
+
+test_outcome_lat %>% 
+  mutate(qvalue = p.adjust(p.value, method = "BY")) %>% 
+  filter(qvalue <= 0.05) %>% 
+  dim()
+```
+
+经过Box-cox转换，依然有527个基因不服从正态分布。
+
+在FDR=0.05下，有184个基因不符合正态分布。
+
+另外肿瘤组织样本量为22，正常组织40，故这里使用原数据采用Wilcoxon检验2000个基因在正常组织和肿瘤组织的分布是否相同。
+
+
+## 归一化处理
+
+```{r}
+dt = scale(dat) %>% 
+  as.data.frame()
+```
+
+
+# Supervised screening
+
+采用Wilcoxon检验比较正常组织和肿瘤组织基因表达均值的差异
+
+```{r}
+df = bind_cols(dt, tissue)
+
+wilcox_test_res = str_c(names(df)[-2001], "~" ," tissues") %>% 
+  # 生成2000个"Has1~ tissues"字符串
+  map(., ~ as.formula(.)) %>% 
+  # 生成2000个表达式
+  map_dfr(., ~ wilcox_test(., data = df))
+  # 批量Wilcoxon检验,并做行合并
+```
+
+top 200基因p值的分布
+
+
+```{r}
+# 筛选top200
+
+top200_gene = wilcox_test_res %>% 
+  arrange(p) %>% 
+  slice_head(n = 200)
+
+top200_genes = top200_gene %>% 
+  dplyr::select(.y.) %>% 
+  deframe()
+
+
+# p值的分布
+
+ggplot(top200_gene) +
+  geom_histogram(aes(x = p, fill = cut(..x.., c(0, 0.05))),
+      color = "black", bins = 20, breaks = seq(0, 0.02, 0.001),
+      show.legend = NA)
+```
+
+
+top 200基因wilcoxon检验结果如下
+```{r}
+# top200基因为
+top200_gene %>% 
+  mutate(p = round(p, 3)) %>% 
+  knitr::kable()
+```
+
+
+# 拟合logistic回归，使用lasso、MCP、L_0 penalty进行变量选择
+
+```{r}
+dtf = df %>% 
+  dplyr::select(all_of(top200_genes), tissues)
+
+X = dtf[, -201] %>% as.matrix()
+Y = dtf[, 201] %>% as.matrix()
+```
+
+
+
+## lasso
+
+lasso解的路径
+
+```{r}
+path_lasso = glmnet(X, Y, alpha = 1, family = "binomial")
+plot(path_lasso)
+
+```
+
+交叉验证结果
+
+```{r}
+set.seed(2021)
+cv_lasso = cv.glmnet(X, Y, alpha = 1, nfolds = 5, family = "binomial",
+                     type.measure = "deviance")
+plot(cv_lasso)
+# 模型系数
+fit_lasso = glmnet(X, Y, alpha = 1, 
+                   family = "binomial", lambda = cv_lasso$lambda.min)
+
+coef_lasso = fit_lasso$beta %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("gene_names") %>% 
+  set_names(c("gene_names", "beta")) %>% 
+  filter(beta != 0)
+```
+
+
+经过5折交叉验证，选取$\lambda =0.028$，拟合模型，选取基因如下：
+
+
+```{r}
+coef_lasso %>% 
+  knitr::kable()
+```
+
+lasso共选出了17个基因分别为：
+
+```{r}
+# coef_lasso %>% dplyr::filter(beta>0) %>% dplyr::select(gene_names) %>% deframe()
+
+coef_lasso %>%  dplyr::select(gene_names) %>% deframe()
+```
+其中
+
+* Has1772、Has1582、Has1325、Has1346、Has1870、Has1473、Has1221、Has1466、Has639、Has1535回归系数为正数。
+
+* Has377、Has1423、Has765、Has66、Has1668、Has617、Has14回归系数为负数。
+
+## MCP
+
+MCP解的路径
+
+
+```{r}
+fit_MCP = ncvreg(X, Y, family = "binomial")
+plot(fit_MCP)
+
+```
+
+
+交叉验证结果
+
+```{r}
+# 交叉验证
+set.seed(2021)
+cv_MCP = cv.ncvreg(X, Y, family = "binomial", nfolds = 5)
+plot(cv_MCP)
+
+coef_MCP = coef(fit_MCP, lambda = cv_MCP$lambda.min)[-1] %>% 
+  as.data.frame() %>% 
+  rownames_to_column("gene_names") %>% 
+  set_names(c("gene_names", "beta")) %>% 
+  filter(beta != 0)
+```
+
+
+
+经过5折交叉验证，选取$\lambda =0.07$，拟合模型，选取基因如下：
+
+```{r}
+coef_MCP %>% 
+  knitr::kable()
+```
+
+MCP共选出了5个基因，分别为：
+
+```{r}
+coef_MCP %>%  dplyr::select(gene_names) %>% deframe()
+```
+
+其中
+
+* Has1772、Has1870回归系数是正数。
+
+* Has377、Has249、Has617回归系数是负数。
+
+
+## L_0 penalization
+
+交叉验证结果
+
+```{r}
+
+set.seed(2021)
+
+fit_L0 = L0Learn.cvfit(X, Y, nFolds = 5, seed = 2021,
+                      penalty = "L0", maxSuppSize = 50)
+
+plot(fit_L0)
+
+Lambda_Index = which.min(fit_L0$cvMeans[[1]])
+lam = fit_L0$fit$lambda[[1]][Lambda_Index]
+
+res_L0 = coef(fit_L0, lambda = lam, gamma = 0)[-1,] %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  mutate(gene_names = colnames(X)) %>% 
+  set_names(c("beta", "gene_names")) %>% 
+  dplyr::select(gene_names, beta) %>% 
+  filter(beta != 0)
+
+row.names(res_L0) = NULL
+
+```
+
+$L_0$变量选择结果
+
+```{r}
+res_L0 %>% 
+  knitr::kable()
+```
+
+
+$L_0$ penalty 选取了5个基因，分别为：
+
+```{r}
+res_L0 %>%  dplyr::select(gene_names) %>% deframe()
+```
+
+
+* Has1325、Has1466、Has806回归系数是正数。
+
+* Has377、Has249回归系数是负数。
+
+
+# K means聚类
+
+可视化结果，可以看到很多类有重合。
+
+```{r}
+df_kmeans = df %>% 
+  dplyr::select(all_of(top200_genes)) %>% 
+  t()
+
+set.seed(2021)
+km.res = kmeans(df_kmeans, 10, nstart = 20)
+
+
+fviz_cluster(km.res, data = df_kmeans,
+             ellipse.type = "t",
+             star.plot = TRUE, 
+             repel = TRUE,
+             ggtheme = theme_minimal())
+
+
+res_dt = km.res$cluster %>% 
+  as.data.frame() %>% 
+  rownames_to_column("gene_names") %>% 
+  set_names(c("gene_names", "cluster_num")) %>% 
+  group_nest(cluster_num) %>% 
+  set_names(c("gene_names", "genes"))
+```
+
+kmeans聚类结果
+
+```{r}
+res_dt %>% 
+  knitr::kable()
+```
+
+
+# Composite penalization
+这里采用了两种方法，分别是group lasso，group MCP。
+
+```{r}
+# dtf = df %>% 
+#   dplyr::select(all_of(top200_genes), tissues)
+# 
+# X1 = dtf[, 1:200] %>% as.matrix()
+# Y1 = dtf[, 201] %>% as.matrix()
+
+
+# Vector describing how the columns of X are grouped
+group = km.res$cluster
+
+```
+
+## group lasso
+
+group lasso解的路径
+
+```{r}
+gpl_path = grpreg(X, Y, group, penalty = 'grLasso', 
+                  family = 'binomial')
+
+plot(gpl_path)
+
+
+```
+
+
+采用5折交叉验证的方法选择$\lambda$.
+
+```{r}
+cv_gpl = cv.grpreg(X, Y, group, nfolds = 5, seed = 2021)
+
+plot(cv_gpl)
+
+fit_gpl = grpreg(X, Y, group, penalty = 'grLasso', 
+                 family = 'binomial', lambda = cv_gpl$lambda.min)
+
+res_gpl = fit_gpl$beta[-1,] %>% 
+  as.data.frame() %>% 
+  rownames_to_column("gene_names") %>% 
+  set_names(c("gene_names", "beta")) %>% 
+  dplyr::filter(beta > 0)
+```
+
+
+group lasso通过5折交叉验证选择$\lambda=0.044$，进行模型拟合，从200个基因中选出了23个变量,分别为：
+
+```{r}
+res_gpl %>% 
+  knitr::kable()
+```
+
+group lasso选出的变量如下：
+
+```{r}
+res_gpl %>% dplyr::select(gene_names) %>% deframe()
+```
+
+
+回归系数均为正数。
+
+
+
+## group MCP
+
+group MCP解的路径
+
+
+```{r}
+gpm_path = grpreg(X, Y, group, penalty = 'grMCP', 
+                  family = 'binomial')
+
+plot(gpm_path)
+
+```
+
+
+使用AIC准则选取$\lambda$，不同$\lambda$对应的AIC的值，选择使得AIC最小的$\lambda$进行模型拟合。
+
+```{r}
+# 下面使用AIC进行选择lambda
+
+fit_gpm = grpreg::select(gpm_path,'AIC')
+lambda = gpm_path$lambda
+xlim = range(gpm_path$lambda)
+plot(lambda, fit_gpm$IC, xlim = xlim, 
+     pch = 19, type = "o", ylab = "AIC")
+
+res_gpm = fit_gpm$beta[-1] %>% 
+  as.data.frame() %>% 
+  rownames_to_column("gene_names") %>% 
+  set_names(c("gene_names", "beta")) %>% 
+  dplyr::filter(beta > 0)
+```
+
+
+使得AIC最小的$\lambda=0.0517$，进行模型拟合，从200个基因中选出了4个变量，分别为：
+
+```{r}
+res_gpm %>% 
+  knitr::kable()
+```
+
+从表中可以看到，回归系数都是正的。
+
+
+# lasso、MCP、L_0 penalt、group lasso和group MCP结果总结
+
+
+* 以上5种方法选出的基因没有重合；
+
+* lasso和MCP选出了四个共同的基因，且系数符号一致，结果如下：
+
+```{r}
+inner_join(coef_lasso, coef_MCP, by = "gene_names") %>% 
+  set_names(c("gene_names", "lasso", "MCP")) %>% 
+  knitr::kable()
+```
+
+* lasso、MCP、L_0 penalty选出来了一个共同的基因，且系数符号一致，结果如下：
+
+```{r}
+inner_join(coef_lasso, coef_MCP, by = "gene_names") %>% 
+  inner_join(res_L0, by = "gene_names") %>% 
+  set_names("gene_names", "lasso", "MCP", "L_0") %>% 
+  knitr::kable()
+```
+
+
+
+
+
+
+
+
+* group lasso和group MCP方法均选出了Has267、Has1058、Has559三个基因，结果如下:
+
+```{r}
+inner_join(res_gpl, res_gpm, by = "gene_names") %>% 
+  set_names("gene_names", "group_lasso", "group_MCP") %>% 
+  knitr::kable()
+```
+
+基因系数差异较大，但系数都为正。
+
+
+* lasso、group lasso选出了一个相同的基因，但系数符号方向相反：
+
+```{r}
+inner_join(coef_lasso, res_gpl, by = "gene_names") %>% 
+  set_names(c("gene_names","lasso", "group_lasso")) %>% 
+  knitr::kable()
+```
+
+
+最后，五种方法选出的变量如下：
+
+```{r}
+bind_rows(coef_lasso, coef_MCP, res_L0, res_gpl, res_gpm, .id = "groups") %>% 
+  mutate(groups = as.numeric(groups)) %>% 
+  mutate(groups = case_when(groups == 1 ~ "`lasso`",
+                            groups == 2 ~ "`MCP`", 
+                            groups == 3 ~ "`L_0`",
+                            groups == 4 ~ "`group lasso`",
+                            groups == 5 ~ "`group MCP`")) %>% 
+  dplyr::select(groups, gene_names) %>% 
+  group_nest(groups) %>% 
+  set_names(c("penalty", "gene_names")) %>% 
+  knitr::kable()
+  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

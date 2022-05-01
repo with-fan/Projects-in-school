@@ -1,0 +1,235 @@
+---
+title: "logistic回归构建冠心病预测模型"
+author: "杨帆 统计学院 流行病与卫生统计学 2020103661"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+vignette: >
+  %\VignetteIndexEntry{Vignette Title}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+**数据来源：**
+
+　　某医院心内科及其他科室病人的病历及实验室检查相关数据。
+
+**分析目的：**
+
+　　通过交叉验证选择合适的lambda进行变量选择，构建预测模型。
+
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidymodels))
+suppressPackageStartupMessages(library(table1))
+suppressPackageStartupMessages(library(skimr))
+suppressPackageStartupMessages(library(LRBL)) #我做的包 
+```
+
+# 读取数据
+```{r}
+CHD_df = read_csv("C:\\Users\\asus\\Desktop\\CHD_data.csv", col_types = cols())
+
+glimpse(CHD_df)
+```
+
+```{r}
+# 数据集前10行展示
+knitr::kable(head(CHD_df,10))
+```
+
+```{r}
+#变量说明
+tibble(
+  `变量名` = names(CHD_df),
+  `字段名称` = c("年龄","收缩压","舒张压","总胆固醇水平","甘油三脂","高密度脂蛋白","低密度脂蛋白","尿酸","血糖","冠心病"),
+  `赋值详情` = c("连续变量","连续变量","连续变量","连续变量","连续变量","连续变量","连续变量","连续变量","连续变量","0=否 1=是") 
+  ) %>% 
+    knitr::kable()
+```
+
+
+
+
+```{r}
+# 检查缺失值
+apply(CHD_df,2,function(x) any(is.na(x)))
+```
+　　该数据没有缺失值
+
+# 描述统计
+```{r}
+CHD_df %>% 
+  skim()
+```
+
+```{r}
+# 连续变量与CHD的箱线图
+CHD_df %>% 
+  mutate(CHD = factor(CHD)) %>%
+  recipe(CHD ~ .) %>% 
+  prep() %>% 
+  juice() %>% 
+  gather(Predictor, value, -CHD)%>% 
+  ggplot(aes(x = CHD, y = value)) + 
+  geom_boxplot() + 
+  geom_point(alpha = 0.3, cex = .5) + 
+  facet_wrap(~Predictor, scales = "free") + 
+  ylab("")
+```
+
+　　可以看到除胆固醇，其他变量在两组分布差异较大。
+```{r}
+# 连续变量相关系数矩阵
+CHD_df %>% 
+  cor() %>% 
+  corrplot::corrplot.mixed(upper = "ellipse")
+```
+
+　　可以看到年龄与冠心病的相关最强，然后是收缩压，并且高密度脂蛋白与冠心病呈现负相关。
+　　
+下面采用t检验进行单因素分析
+```{r}
+rndr = function(x, name, ...) {
+    if (length(x) == 0) {
+        y <- CHD_df_[[name]]
+        s <- rep("", length(render.default(x=y, name=name, ...)))
+        if (is.numeric(y)) {
+            p <- t.test(y ~ CHD_df_$CHD)$p.value
+        } else {
+            p <- chisq.test(table(y,
+                                droplevels(CHD_df_$CHD)))$p.value
+        }
+        s[2] <- sub("<", "&lt;", format.pval(p, digits=3, eps=0.001))
+        s
+    } else {
+        render.default(x=x, name=name, ...)
+    }
+}
+
+rndr.strat = function(label, n, ...) {
+    ifelse(n==0, label, render.strat.default(label, n, ...))
+}
+```
+
+```{r, warning=FALSE}
+CHD_df_ = CHD_df 
+CHD_df_$CHD = factor(CHD_df_$CHD, levels=c(0, 1, 2), 
+                    labels = c("non_CHD", "CHD", "P-value"))
+
+table1::label(CHD_df_$age) = "年龄"
+table1::label(CHD_df_$sys_BP) = "收缩压"
+table1::label(CHD_df_$dia_BP) = "舒张压"
+table1::label(CHD_df_$totChol) = "总胆固醇水平"
+table1::label(CHD_df_$HDL) = "高密度脂蛋白"
+table1::label(CHD_df_$LDL) = "低密度脂蛋白"
+table1::label(CHD_df_$trigl) = "甘油三酯"
+table1::label(CHD_df_$UA) = "尿酸"
+table1::label(CHD_df_$BS) = "血糖"
+
+formula_disc = str_c("~", str_c(colnames(CHD_df_)[!c(names(CHD_df_) %in% c("CHD"))],collapse = "+"),"|CHD",sep="" ) %>% 
+  as.formula()
+
+table1(formula_disc, data = CHD_df_, droplevels = F,
+       render = rndr,render.strat = rndr.strat, overall = F)
+```
+
+```{r}
+# 因变量分布情况
+CHD_df %>% 
+  count(CHD) %>% 
+  mutate(prop = n/sum(n))
+```
+
+
+```{r}
+# 数据划分为训练集和测试集
+set.seed(2020)
+sam_id = sample(1:nrow(CHD_df),nrow(CHD_df)*0.75,replace = F)
+df_train = CHD_df[sam_id,]
+df_test = CHD_df[-sam_id,]
+
+df_train %>% 
+  count(CHD) %>% 
+  mutate(prop = n/sum(n))
+
+df_test %>% 
+  count(CHD) %>% 
+  mutate(prop = n/sum(n))
+```
+
+```{r}
+# 数据行号分十折
+data_list = CV_split(10, 927, 2020)
+```
+
+```{r}
+# lambda用以训练模型
+penalty = 10^seq(-4, -1, length.out = 30)
+```
+
+```{r}
+# 计算不同lambda的AUC的平均值，并且求出最大AUC对应的lambda
+cv_out = CV_param(dataset = df_train, dat_list = data_list, penalty = penalty, k = 10, n = 30)
+
+cv_out$cv_auc
+cv_out$best_penalty
+```
+
+
+```{r}
+# 绘出不同lambda对应的AUC值
+data.frame(penalty = penalty,
+           cv.auc = cv_out$cv_auc) %>% 
+  ggplot(aes(x = penalty, y = cv_out$cv_auc)) + 
+  geom_point() + 
+  geom_line() + 
+  ylab("Area under the ROC Curve") +
+  scale_x_log10(labels = scales::label_number())
+```
+
+
+```{r}
+# 训练最终模型并求出在测试集效果
+pred_val = final_test(data_train = df_train,data_test = df_test,
+          lambda = cv_out$best_penalty, maxIterNum = 10000,step = 0.01)
+```
+
+```{r}
+# 最终模型在测试集的各个评估指标
+pred_val$AUC
+pred_val$confusion_matrix
+pred_val$recall
+pred_val$precision
+```
+
+　　可以看到召回率很高而精确率很低，即把潜在的冠心病患者找出来了，但是预测出冠心病患者中有32.8%是没有患病的。
+
+　　另外，该算法求解使用梯度下降法，模型求解需要进一步优化，使用glmnet包，lambda对应的AUC较为平稳。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

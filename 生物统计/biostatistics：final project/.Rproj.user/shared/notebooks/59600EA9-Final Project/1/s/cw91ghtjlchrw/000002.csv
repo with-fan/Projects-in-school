@@ -1,0 +1,6 @@
+"0","suppressPackageStartupMessages(library(tidyverse))"
+"0","suppressPackageStartupMessages(library(MASS))"
+"0","suppressPackageStartupMessages(library(rstatix))"
+"0","suppressPackageStartupMessages(library(medicaldata))"
+"0","suppressPackageStartupMessages(library(DescrTab2))"
+"0","suppressPackageStartupMessages(library(CSTE))"

@@ -1,0 +1,1236 @@
+---
+title: "红酒类别预测"
+author:
+  - 杨帆 2020103661 统计学院   流行病与卫生统计学
+documentclass: ctexart
+keywords:
+  - 中文
+  - R Markdown
+output:
+  rticles::ctex:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+# 作业
+
+**数据说明：**
+
+该数据集是2009年针对葡萄牙某款红酒的评测数据，其中前十一项指标均来自理化试验，而第十二项红酒质量评分指标是基于主观评价。
+
+**作业要求：**
+
+1、描述性统计分析
+
+2、建立二分类模型预测“普通红酒”（v12=3，4，5）和“高质量红酒”（v12=6，7，8）
+
+3、建立多分类模型预测红酒类别（v12）
+
+**主要事项：**
+
+1、如果有需要，进行适当的数据变换
+
+2、至少使用三种预测模型，使用交叉验证方法进行模型选择，在测试集比较模型效果
+
+
+```{r}
+# 加载包
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(tidymodels))
+suppressPackageStartupMessages(library(themis))
+suppressPackageStartupMessages(library(glmnet))
+suppressPackageStartupMessages(library(kernlab))
+suppressPackageStartupMessages(library(flextable))
+```
+
+```{r}
+# 读取数据
+red_wine = read_csv("red_wine_quality_data.csv", col_types = cols()) %>% glimpse()
+# knitr::kable(head(red_wine), 
+#              caption = 'red_wine_quality_data',align='c')
+
+```
+
+# 1、描述性统计分析
+```{r}
+# 检查缺失值
+apply(red_wine, 2, function(x) any(is.na(x)))
+```
+　　可以看到该数据集没有缺失值。
+
+```{r}
+# summary
+summary(red_wine[,-ncol(red_wine)])
+```
+```{r}
+# 红酒质量频数统计
+red_wine %>% 
+  count(quality) %>% 
+  mutate(prop = n/sum(n))
+```
+　　可以看到类别3、4、8占比较低，不到4%
+
+```{r}
+# 绘制直方图
+# red_wine %>% 
+#   recipe(~.) %>% 
+#   prep() %>% 
+#   juice() %>% 
+#   gather(Predictor, value) %>%
+#   ggplot(aes(value)) +
+#   geom_density() +
+#   # geom_histogram()
+#   facet_wrap(~Predictor, scales = "free")
+
+```
+　　可以看到密度（density）、PH接近正态分布，其他变量分布呈现偏态或者双峰。
+
+下面将变量通过Box_Cox变换进行相关性分析
+```{r}
+# 变量相关系数矩阵
+red_wine %>% 
+  recipe(~.) %>% 
+  step_BoxCox(all_predictors(),-quality) %>% 
+  prep() %>% 
+  juice() %>% 
+  cor() %>% 
+  corrplot::corrplot.mixed(upper = "ellipse")
+
+
+```
+
+　　可以看到红酒质量（quality）与酒精浓度（alcohol）、硫酸盐（sulphates）、柠檬酸（citric acid）、非挥发性酸（fixed acidity）呈正相关关系，但相关性不是很高，与红酒质量红酒质量（quality）相关性最高的是酒精浓度（alcohol），为0.47；
+
+　　红酒质量（quality）与密度（density）、游离二氧化硫（free sulfur dioxide）、氯化物（chlorides）、挥发性酸度（volatile acidity）呈负相关，相关性同样不是很高，其与挥发性酸度（volatile acidity）相关性最高，为-0.39。
+
+　　此外，解释变量中，非挥发性酸（fixed acidity）与柠檬酸（citric acid）、总二氧化硫（total sulfur dioxide）呈正相关，相关系数分别为0.65和0.67；与PH呈负相关，为-0.71.
+
+　　相关性较大的有游离二氧化硫（free sulfur dioxide）和总二氧化硫（total sulfur dioxide），相关系数为0.78；挥发性酸度（volatile acidity）与柠檬酸（citric acid）呈负相关，为-0.57；柠檬酸（citric acid）与PH呈负相关，相关系数为-0.54。
+
+
+# 2、预测“普通红酒”（v12=3，4，5）和“高质量红酒”（v12=6，7，8）
+
+```{r}
+dat_rw = red_wine
+# 创建分类标签
+dat_rw$class = ifelse(dat_rw$quality %in% c(3,4,5),0,1)
+dat_rw$quality = NULL
+
+glimpse(dat_rw)
+```
+
+## 描述统计
+```{r}
+# 因变量分布情况
+dat_rw %>% 
+  count(class) %>% 
+  mutate(prop = n/sum(n))
+```
+　　因变量分布较为均衡
+
+```{r}
+# 相关系数矩阵
+dat_rw %>% 
+  recipe(~.) %>% 
+  step_BoxCox(all_predictors(),-class) %>% 
+  prep() %>% 
+  juice() %>% 
+  cor() %>% 
+  corrplot::corrplot.mixed(upper = "ellipse")
+```
+
+
+```{r}
+# 绘制各个变量箱线图
+dat_rw$class = as.factor(dat_rw$class)
+# dat_rw %>% 
+#   recipe(class ~ .) %>% 
+#   prep() %>% 
+#   juice() %>% 
+#   gather(Predictor, value, -class)%>% 
+#   ggplot(aes(x = class, y = value)) + 
+#   geom_boxplot() + 
+#   geom_point(alpha = 0.3, cex = .5) + 
+#   facet_wrap(~Predictor, scales = "free") + 
+#   ylab("")
+```
+　　可以看到酒精(alcohol)、柠檬酸(citric acid)、密度(density)、硫酸盐(sulphates)、挥发性酸度(volatile acidity)对因变量有较大影响。
+
+
+
+```{r}
+# 划分训练集、测试集
+df = dat_rw
+set.seed(2020)
+df_split = initial_split(df, prop=0.75, strata = class)
+
+df_train = training(df_split)
+df_test = testing(df_split)
+
+# 训练集、测试机因变量分布
+df_train %>% 
+  count(class) %>% 
+  mutate(prop = n/sum(n))
+
+df_test %>% 
+  count(class) %>% 
+  mutate(prop = n/sum(n))
+```
+　　训练集、测试集因变量分布接近，且较为均衡。
+
+```{r}
+# 将训练数据划分为10折
+df_vfold<-vfold_cv(df_train,v=10,repeats=1)
+df_vfold
+```
+
+
+*****************************
+下面分别采用logistic回归、随机森林、boosted tree进行分类
+
+## logistic回归
+
+```{r}
+# 定义recipe
+lr_recipe = df_train %>% 
+  recipe(class ~ .)
+```
+
+```{r}
+# 定义模型
+lr_model <- 
+  logistic_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet")
+```
+
+```{r}
+# 定义工作流
+lr_wfl = 
+  workflow() %>% 
+  add_recipe(lr_recipe) %>%
+  add_model(lr_model)
+lr_wfl
+```
+
+```{r}
+# 创建调节参数的格点集
+lr_reg_grid <- tibble(penalty = 10^seq(-4, -1, length.out = 30))
+
+## 最小的5个lambda
+lr_reg_grid %>% top_n(-5)
+## 最大的5个lambda
+lr_reg_grid %>% top_n(5)
+```
+
+```{r}
+
+plan(multisession, workers = 8)  # 启动多线程，参数workers可设置线程数
+
+
+
+f = future({
+  
+  system.time({
+# 训练模型及调参
+lr_tune = 
+  lr_wfl %>% 
+  tune_grid(df_vfold,
+            grid = lr_reg_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+  })
+  })
+
+value(f)
+plan(sequential)
+```
+
+```{r}
+# 可视化不同惩罚参数下的AUC
+lr_tune %>% 
+  collect_metrics() %>% 
+  filter(.metric=='roc_auc') %>% 
+  ggplot(aes(x = penalty, y = mean)) + 
+  geom_point() + 
+  geom_line() + 
+  ylab("Area under the ROC Curve") +
+  scale_x_log10(labels = scales::label_number())
+```
+
+```{r}
+# 根据AUC值选出最好的惩罚参数
+lr_best = select_best(lr_tune,metric = "roc_auc")
+lr_best
+```
+
+```{r}
+# 交叉验证最好的模型ROC曲线
+lr_auc <- 
+  lr_tune %>% 
+  collect_predictions(parameters = lr_best) %>% 
+  roc_curve(class, .pred_0) %>% 
+  mutate(model = "Logistic Regression")
+
+autoplot(lr_auc)
+
+```
+
+```{r}
+# 选出最好的惩罚函数在训练集建模
+lr_wfl_final = 
+  lr_wfl %>%
+  finalize_workflow(lr_best) %>% 
+  fit(data = df_train)
+
+
+lr_train_probs = lr_wfl_final %>%
+  predict(df_train, type = "prob") %>% 
+  bind_cols(df_train %>% dplyr::select(class)) %>% 
+  bind_cols(predict(lr_wfl_final, df_train))
+
+# 混淆矩阵
+conf_mat(lr_train_probs, class, .pred_class)
+
+# AUC
+lr_train_AUC = roc_auc(lr_train_probs, class, .pred_0)
+lr_train_AUC
+# 准确率
+lr_train_accu = accuracy(lr_train_probs,class,.pred_class)
+lr_train_accu
+# 召回率
+lr_train_rec = recall(lr_train_probs,class,.pred_class)
+lr_train_rec
+# 精确率
+lr_train_prec = precision(lr_train_probs,class,.pred_class)
+lr_train_prec
+
+lr_train_metric = 
+  bind_rows(lr_train_accu,lr_train_AUC,
+            lr_train_rec,lr_train_prec) %>% 
+  select(.metric,.estimate)
+
+
+```
+
+```{r}
+# 在测试集预测并评估模型性能
+lr_test_probs = lr_wfl_final %>%
+  predict(df_test, type = "prob") %>% 
+  bind_cols(df_test %>% dplyr::select(class)) %>% 
+  bind_cols(predict(lr_wfl_final, df_test))
+
+# 混淆矩阵
+conf_mat(lr_test_probs, class, .pred_class)
+
+# AUC
+lr_test_AUC = roc_auc(lr_test_probs, class, .pred_0)
+lr_test_AUC
+# 准确率
+lr_test_accu = accuracy(lr_test_probs,class,.pred_class)
+lr_test_accu
+# 召回率
+lr_test_rec = recall(lr_test_probs,class,.pred_class)
+lr_test_rec
+# 精确率
+lr_test_prec = precision(lr_test_probs,class,.pred_class)
+lr_test_prec
+
+lr_test_metric = 
+  bind_rows(lr_test_accu,lr_test_AUC,
+            lr_test_rec,lr_test_prec) %>% 
+  select(.metric,.estimate)
+
+lr_metric = inner_join(lr_train_metric, lr_test_metric,
+                       by = ".metric")
+
+lr_ROC = roc_curve(lr_test_probs, class, .pred_0) %>% 
+  mutate(model = "Logistic Regression")
+# autoplot(lr_ROC)
+```
+
+
+## 随机森林
+```{r}
+# 定义recipe
+rf_recipe = df_train %>% 
+  mutate(class = as.factor(class)) %>% 
+  recipe(class ~ .)
+```
+
+```{r}
+
+# 定义模型
+rf_model = rand_forest(mtry=tune(),min_n = tune(), trees = 1000)%>%
+           set_mode("classification")%>%
+           set_engine("ranger")
+
+```
+
+```{r}
+# 使用工作流将预处理和模型结合起来
+rf_wfl = 
+  workflow() %>%
+  add_recipe(rf_recipe) %>%
+  add_model(rf_model)
+rf_wfl
+```
+
+
+```{r}
+# 创建调节参数的格点集
+rf_grid = grid_regular(finalize(mtry(), x = df_train[, -1]),
+                       min_n(),
+                       levels = 5)
+
+```
+
+```{r}
+# 训练模型及调参
+
+set.seed(2020)
+rf_tune = 
+  rf_wfl %>% 
+  tune_grid(df_vfold,
+            grid = rf_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+autoplot(rf_tune)
+```
+
+```{r}
+# 根据交叉验证选出最好的超参数
+rf_best = select_best(rf_tune)
+rf_best
+```
+
+```{r}
+# 交叉验证最好的模型ROC曲线
+rf_auc = 
+  rf_tune %>% 
+  collect_predictions(parameters = rf_best) %>% 
+  roc_curve(class, .pred_0) %>% 
+  mutate(model = "Random Forest")
+
+autoplot(rf_auc)
+```
+
+
+```{r}
+# 选出最好的惩罚函数在训练集建模
+rf_wfl_final = 
+  rf_wfl %>%
+  finalize_workflow(rf_best) %>% 
+  fit(data = df_train)
+
+rf_train_probs = rf_wfl_final %>%
+  predict(df_train, type = "prob") %>% 
+  bind_cols(df_train %>% dplyr::select(class)) %>% 
+  bind_cols(predict(rf_wfl_final, df_train))
+
+# 混淆矩阵
+conf_mat(rf_train_probs, class, .pred_class)
+
+# AUC
+rf_train_AUC = roc_auc(rf_train_probs, class, .pred_0)
+rf_train_AUC
+# 准确率
+rf_train_accu = accuracy(rf_train_probs,class,.pred_class)
+rf_train_accu
+# 召回率
+rf_train_rec = recall(rf_train_probs,class,.pred_class)
+rf_train_rec
+# 精确率
+rf_train_prec = precision(rf_train_probs,class,.pred_class)
+rf_train_prec
+
+rf_train_metric = 
+  bind_rows(rf_train_accu,rf_train_AUC,
+            rf_train_rec,rf_train_prec) %>% 
+  select(.metric,.estimate)
+```
+
+```{r}
+# 在测试集预测并评估模型性能
+rf_test_probs = rf_wfl_final %>%
+  predict(df_test, type = "prob") %>% 
+  bind_cols(df_test %>% dplyr::select(class)) %>% 
+  bind_cols(predict(rf_wfl_final, df_test))
+
+# 混淆矩阵
+conf_mat(rf_test_probs, class, .pred_class)
+
+# AUC
+rf_test_AUC = roc_auc(rf_test_probs, class, .pred_0)
+rf_test_AUC
+# 准确率
+rf_test_accu = accuracy(rf_test_probs,class,.pred_class)
+rf_test_accu
+# 召回率
+rf_test_rec = recall(rf_test_probs,class,.pred_class)
+rf_test_rec
+# 精确率
+rf_test_prec = precision(rf_test_probs,class,.pred_class)
+rf_test_prec
+
+rf_test_metric = 
+  bind_rows(rf_test_accu,rf_test_AUC,
+            rf_test_rec,rf_test_prec) %>% 
+  select(.metric,.estimate)
+
+rf_metric = inner_join(rf_train_metric, rf_test_metric,
+                       by=".metric")
+
+rf_ROC = roc_curve(rf_test_probs, class, .pred_0) %>%
+  mutate(model = "Random Forest")
+# autoplot(rf_ROC)
+```
+
+
+## Boosted Trees
+```{r}
+# 定义recipe
+C5_recipe = df_train %>% 
+  recipe(class ~ .)
+```
+
+
+```{r}
+# 定义模型
+C5_model <- 
+  boost_tree(trees = tune(), min_n = tune()) %>% 
+  set_engine("C5.0") %>% 
+  set_mode("classification")
+```
+
+```{r}
+# 定义工作流
+C5_wfl = 
+  workflow() %>%
+  add_recipe(C5_recipe) %>%
+  add_model(C5_model)
+C5_wfl
+```
+
+```{r}
+set.seed(2020)
+C5_tune = 
+  C5_wfl %>% 
+  tune_grid(df_vfold,
+            grid = 25,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+
+autoplot(C5_tune)
+```
+
+```{r}
+# 根据交叉验证选出最好的超参数
+C5_best = select_best(C5_tune)
+C5_best
+```
+
+```{r}
+# 交叉验证最好的模型ROC曲线
+C5_auc = 
+  C5_tune %>% 
+  collect_predictions(parameters = C5_best) %>% 
+  roc_curve(class, .pred_0) %>% 
+  mutate(model = "Boosted Trees")
+
+autoplot(C5_auc)
+```
+
+
+```{r}
+# 选出最好的惩罚函数在训练集建模
+C5_wfl_final = 
+  C5_wfl %>%
+  finalize_workflow(C5_best) %>% 
+  fit(data = df_train)
+
+C5_train_probs = C5_wfl_final %>%
+  predict(df_train, type = "prob") %>% 
+  bind_cols(df_train %>% dplyr::select(class)) %>% 
+  bind_cols(predict(C5_wfl_final, df_train))
+
+# 混淆矩阵
+conf_mat(C5_train_probs, class, .pred_class)
+
+# AUC
+C5_train_AUC = roc_auc(C5_train_probs, class, .pred_0)
+C5_train_AUC
+# 准确率
+C5_train_accu = accuracy(C5_train_probs,class,.pred_class)
+C5_train_accu
+# 召回率
+C5_train_rec = recall(C5_train_probs,class,.pred_class)
+C5_train_rec
+# 精确率
+C5_train_prec = precision(C5_train_probs,class,.pred_class)
+C5_train_prec
+
+C5_train_metric = 
+  bind_rows(C5_train_accu,C5_train_AUC,
+            C5_train_rec,C5_train_prec) %>% 
+  select(.metric,.estimate)
+
+```
+
+```{r}
+# 在测试集预测并评估模型性能
+C5_test_probs = C5_wfl_final %>%
+  predict(df_test, type = "prob") %>% 
+  bind_cols(df_test %>% dplyr::select(class)) %>% 
+  bind_cols(predict(C5_wfl_final, df_test))
+
+
+
+# 混淆矩阵
+conf_mat(C5_test_probs, class, .pred_class)
+
+# AUC
+C5_test_AUC = roc_auc(C5_test_probs, class, .pred_0)
+C5_test_AUC
+# 准确率
+C5_test_accu = accuracy(C5_test_probs,class,.pred_class)
+C5_test_accu
+# 召回率
+C5_test_rec = recall(C5_test_probs,class,.pred_class)
+C5_test_rec
+# 精确率
+C5_test_prec = precision(C5_test_probs,class,.pred_class)
+C5_test_prec
+
+C5_test_metric = 
+  bind_rows(C5_test_AUC,C5_test_accu,
+            C5_test_rec,C5_test_prec) %>% 
+  select(.metric, .estimate)
+
+C5_metric = inner_join(C5_train_metric,C5_test_metric,
+                       by = ".metric")
+
+C5_ROC = roc_curve(C5_test_probs, class, .pred_0) %>% 
+  mutate(model = "Boosted Trees")
+# autoplot(C5_ROC)
+```
+
+```{r}
+# 三个机器学习模型在训练集、测试集的评估指标
+bind_metric = 
+  inner_join(lr_metric, inner_join(rf_metric,C5_metric,
+                                   by = ".metric"),
+             by = ".metric") %>% 
+  dplyr::rename(metric = .metric,
+                LR_train = .estimate.x,LR_test = .estimate.y,
+                RF_train = .estimate.x.x,RF_test = .estimate.y.x,
+                BT_train = .estimate.x.y,BT_test = .estimate.y.y)
+
+knitr::kable(bind_metric)
+
+# typology = tibble(
+#   col_keys = c(".metric",".estimate.x",".estimate.y",".estimate.x.x",
+#                ".estimate.y.x",".estimate.x.y",".estimate.y.y"),
+#   
+#   type = c("metric",
+#            "Logistic Regression","Logistic Regression",
+#            "Random Forest","Random Forest",
+#            "Boosted Tree","Boosted Tree"),
+#   
+#   what = c("metric","训练集","测试集","训练集", "测试集","训练集",
+#            "测试集")
+#   )
+# 
+# bind_metric %>% 
+#   flextable() %>% 
+#   set_header_df(mapping = typology, key = "col_keys") %>% 
+#   merge_h(part = "header") %>% 
+#   merge_v(part = "header") %>% 
+#   theme_booktabs() %>% 
+#   autofit() %>% 
+#   fix_border_issues()
+
+```
+　　从表中可以看出，随机森林表现在正确率、AUC、召回率、精确率最好，logistic回归在训练集、测试集表现差不多，而随机森林和boosted tree在训练集和测试集差别稍大，但总体后两个模型要比logistic回归表现更好。
+
+```{r}
+# 三个机器学习模型在测试集ROC曲线
+bind_rows(lr_ROC,rf_ROC,C5_ROC) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1.5, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = .6)
+```
+　　ROC曲线同样表明随机森林预测效果更好。
+
+
+# 3、建立多分类模型预测红酒类别（v12=3，4，5）
+
+```{r}
+dat_rw2 = red_wine
+dat_rw2 = dat_rw2 %>% 
+  filter(quality<6) %>% 
+  glimpse()
+```
+
+
+## 描述统计
+```{r}
+# 因变量分布情况
+dat_rw2 %>% 
+  count(quality) %>% 
+  mutate(prop = n/sum(n))
+```
+　　可以看到因变量的分布不平衡，即quality=5的占90%以上，quality=4的占7%，而quality=3的只有1%。
+
+```{r}
+# 相关系数矩阵
+dat_rw2 %>% 
+  recipe(quality~.) %>% 
+  step_BoxCox(all_predictors()) %>% 
+  prep() %>% 
+  juice() %>% 
+  cor() %>% 
+  corrplot::corrplot.mixed(upper = "ellipse")
+```
+
+
+```{r}
+# 绘制各个变量箱线图
+dat_rw2$quality = as.factor(dat_rw2$quality)
+dat_rw2 %>% 
+  recipe( ~ .) %>% 
+  prep() %>% 
+  juice() %>% 
+  gather(Predictor, value, -quality)%>% 
+  ggplot(aes(x = quality, y = value)) + 
+  geom_boxplot() + 
+  geom_point(alpha = 0.3, cex = .5) + 
+  facet_wrap(~Predictor, scales = "free") + 
+  ylab("")
+```
+　　可以看到不同变量在不同红酒类别分布差别很大，quality=5的类别最多，异常值也相对更多，有些变量中位数在quality三个类别基本相同，而柠檬酸(citric acid)、密度(density)、游离二氧化硫(free sulfur dioxide)、总二氧化硫（total sulfur dioxide）、挥发性酸度(volatile acidity)在quality三个类别相对差别较大。
+
+
+```{r}
+# 划分训练集、测试集
+df = dat_rw2 %>% 
+  mutate(quality = as.factor(quality))
+
+set.seed(2020)
+df_split = initial_split(df, prop=0.8, strata = quality)
+
+df_train = training(df_split)
+df_test = testing(df_split)
+
+# 训练集、测试集因变量分布
+df_train %>% 
+  count(quality) %>% 
+  mutate(prop = n/sum(n))
+
+df_test %>% 
+  count(quality) %>% 
+  mutate(prop = n/sum(n))
+```
+　　可以看到训练集类别严重不平衡，下面采用smote算法平衡数据
+
+```{r}
+df_train = df_train %>% 
+  mutate(quality = as.factor(quality)) %>% 
+  recipe(quality ~ .) %>% 
+  step_smote(quality) %>% #解决数据不平衡
+  prep() %>% 
+  juice()
+
+df_train %>% 
+  count(quality) %>% 
+  mutate(prop = n/sum(n))
+
+``` 
+　　这时样本三类分别占33.3%，类别达到平衡
+
+```{r}
+# 将训练数据划分为10折
+df_vfold<-vfold_cv(df_train,v=10,repeats=1)
+df_vfold
+```
+
+
+*****************************
+下面分别采用随机森林、boosted trees、SVM进行分类
+
+
+
+## 随机森林
+```{r}
+df_train_rec = df_train %>% 
+  recipe(quality ~ .)
+```
+
+
+```{r}
+
+# 定义模型
+rf_model = rand_forest(mtry=tune(),min_n = tune(), trees = 1000)%>%
+           set_mode("classification")%>%
+           set_engine("ranger")
+
+```
+
+```{r}
+# 使用工作流将预处理和模型结合起来
+rf_wfl = 
+  workflow() %>%
+  add_recipe(df_train_rec) %>%
+  add_model(rf_model)
+
+rf_wfl
+```
+
+
+```{r}
+# 创建调节参数的格点集
+rf_grid = grid_regular(finalize(mtry(), x = df_train[, -1]),
+                       min_n(),
+                       levels = 5)
+
+```
+
+```{r}
+# 训练模型及调参
+set.seed(2020)
+rf_tune = 
+  rf_wfl %>% 
+  tune_grid(df_vfold,
+            grid = rf_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+autoplot(rf_tune)
+```
+
+```{r}
+# 根据交叉验证选出最好的超参数
+rf_best = select_best(rf_tune)
+rf_best
+```
+
+```{r}
+# 交叉验证最好的模型ROC曲线
+rf_auc = 
+  rf_tune %>% 
+  collect_predictions(parameters = rf_best) %>% 
+  roc_curve(quality, .pred_3:.pred_5) %>% 
+  mutate(model = "Random Forest")
+
+autoplot(rf_auc)
+```
+
+```{r}
+# 选出最好的惩罚函数在训练集建模
+rf_wfl_final = 
+  rf_wfl %>%
+  finalize_workflow(rf_best) %>% 
+  fit(data = df_train)
+
+rf_train_probs = rf_wfl_final %>%
+  predict(df_train, type = "prob") %>% 
+  bind_cols(df_train %>% dplyr::select(quality)) %>% 
+  bind_cols(predict(rf_wfl_final, df_train))
+
+# 混淆矩阵
+conf_mat(rf_train_probs, quality, .pred_class)
+
+# AUC
+rf_train_AUC = roc_auc(rf_train_probs, quality, .pred_3:.pred_5)
+rf_train_AUC
+# 准确率
+rf_train_accu = accuracy(rf_train_probs,quality,.pred_class)
+rf_train_accu
+# 召回率
+rf_train_rec = recall(rf_train_probs,quality,.pred_class)
+rf_train_rec
+# 精确率
+rf_train_prec = precision(rf_train_probs,quality,.pred_class)
+rf_train_prec
+
+rf_train_metric = 
+  bind_rows(rf_train_accu,rf_train_AUC,
+            rf_train_rec,rf_train_prec) %>% 
+  select(.metric,.estimate)
+
+```
+
+```{r}
+# 在测试机预测并评估模型性能
+rf_test_probs = rf_wfl_final %>%
+  predict(df_test, type = "prob") %>% 
+  bind_cols(df_test %>% dplyr::select(quality)) %>% 
+  bind_cols(predict(rf_wfl_final, df_test))
+
+# 混淆矩阵
+conf_mat(rf_test_probs, quality, .pred_class)
+
+# AUC
+rf_test_AUC = roc_auc(rf_test_probs, quality, .pred_3:.pred_5)
+rf_test_AUC
+# 准确率
+rf_test_accu = accuracy(rf_test_probs,quality,.pred_class)
+rf_test_accu
+# 召回率
+rf_test_rec = recall(rf_test_probs,quality,.pred_class)
+rf_test_rec
+# 精确率
+rf_test_prec = precision(rf_test_probs,quality,.pred_class)
+rf_test_prec
+
+rf_test_metric = 
+  bind_rows(rf_test_accu,rf_test_AUC,
+            rf_test_rec,rf_test_prec) %>% 
+  select(.metric,.estimate)
+
+rf_metric = inner_join(rf_train_metric, rf_test_metric,
+                       by=".metric")
+
+
+rf_ROC = roc_curve(rf_test_probs, quality, .pred_3:.pred_5) %>%
+  mutate(model = "Random Forest")
+# autoplot(rf_ROC)
+```
+
+## Boosted Trees
+```{r}
+df_train_rec = df_train %>% 
+  recipe(quality ~ .)
+```
+
+```{r}
+# 定义模型
+C5_model <- 
+  boost_tree(trees = tune(), min_n = tune()) %>% 
+  set_engine("C5.0") %>% 
+  set_mode("classification")
+```
+
+```{r}
+# 定义工作流
+C5_wfl = 
+  workflow() %>%
+  add_recipe(df_train_rec) %>%
+  add_model(C5_model)
+C5_wfl
+```
+
+```{r}
+set.seed(2020)
+C5_tune = 
+  C5_wfl %>% 
+  tune_grid(df_vfold,
+            grid = 25,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+
+autoplot(C5_tune)
+```
+
+
+```{r}
+# 根据交叉验证选出最好的超参数
+C5_best = select_best(C5_tune)
+C5_best
+```
+
+```{r}
+# 交叉验证最好的模型ROC曲线
+C5_auc = 
+  C5_tune %>% 
+  collect_predictions(parameters = C5_best) %>% 
+  roc_curve(quality, .pred_3:.pred_5) %>% 
+  mutate(model = "Boosted Trees")
+
+autoplot(C5_auc)
+```
+
+```{r}
+# 选出最好的惩罚函数在训练集建模
+C5_wfl_final = 
+  C5_wfl %>%
+  finalize_workflow(C5_best) %>% 
+  fit(data = df_train)
+
+C5_train_probs = C5_wfl_final %>%
+  predict(df_train, type = "prob") %>% 
+  bind_cols(df_train %>% dplyr::select(quality)) %>% 
+  bind_cols(predict(C5_wfl_final, df_train))
+
+# 混淆矩阵
+conf_mat(C5_train_probs, quality, .pred_class)
+
+# AUC
+C5_train_AUC = roc_auc(C5_train_probs, quality, .pred_3:.pred_5)
+C5_train_AUC
+# 准确率
+C5_train_accu = accuracy(C5_train_probs,quality,.pred_class)
+C5_train_accu
+# 召回率
+C5_train_rec = recall(C5_train_probs,quality,.pred_class)
+C5_train_rec
+# 精确率
+C5_train_prec = precision(C5_train_probs,quality,.pred_class)
+C5_train_prec
+
+C5_train_metric = 
+  bind_rows(C5_train_accu,C5_train_AUC,
+            C5_train_rec,C5_train_prec) %>% 
+  select(.metric,.estimate)
+
+```
+
+```{r}
+# 在测试集预测并评估模型性能
+C5_test_probs = C5_wfl_final %>%
+  predict(df_test, type = "prob") %>% 
+  bind_cols(df_test %>% dplyr::select(quality)) %>% 
+  bind_cols(predict(C5_wfl_final, df_test))
+
+# 混淆矩阵
+conf_mat(C5_test_probs, quality, .pred_class)
+
+# AUC
+C5_test_AUC = roc_auc(C5_test_probs, quality, .pred_3:.pred_5)
+C5_test_AUC
+# 准确率
+C5_test_accu = accuracy(C5_test_probs,quality,.pred_class)
+C5_test_accu
+# 召回率
+C5_test_rec = recall(C5_test_probs,quality,.pred_class)
+C5_test_rec
+# 精确率
+C5_test_prec = precision(C5_test_probs,quality,.pred_class)
+C5_test_prec
+
+C5_test_metric = 
+  bind_rows(C5_test_AUC,C5_test_accu,
+            C5_test_rec,C5_test_prec) %>% 
+  select(.metric, .estimate)
+
+C5_metric = inner_join(C5_train_metric,C5_test_metric,
+                       by = ".metric")
+
+
+
+C5_ROC = roc_curve(C5_test_probs, quality, .pred_3:.pred_5) %>% 
+  mutate(model = "Boosted Trees")
+# autoplot(C5_ROC)
+```
+
+## 支持向量机
+```{r}
+# 预处理
+svm_rec = 
+  recipe(quality ~ ., data = df_train) %>%
+  step_BoxCox(all_predictors())%>%
+  step_normalize(all_predictors())
+
+svm_prep = prep(svm_rec)
+
+# 测试集预处理
+test_normalized = bake(svm_prep, new_data = df_test, all_predictors())
+```
+
+```{r} 
+# 定义模型
+set.seed(2020)
+svm_model =
+  svm_rbf(cost = tune(),rbf_sigma = tune()) %>%
+  set_mode("classification") %>%
+  set_engine("kernlab")
+
+```
+
+```{r}
+# 定义工作流
+svm_wfl = 
+  workflow() %>%
+  add_recipe(svm_rec) %>%
+  add_model(svm_model)
+svm_wfl
+```
+
+```{r}
+# 创建调节参数的格点集
+svm_grid = grid_regular(cost(),
+                        rbf_sigma(),
+                        levels = 5)
+```
+
+
+```{r}
+set.seed(2020)
+svm_tune = 
+  svm_wfl %>% 
+  tune_grid(df_vfold,
+            grid = svm_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+
+autoplot(svm_tune)
+```
+
+```{r}
+# 根据交叉验证选出最好的超参数
+svm_best = select_best(svm_tune)
+svm_best
+```
+
+```{r}
+# 交叉验证最好的模型ROC曲线
+svm_auc = 
+  svm_tune %>% 
+  collect_predictions(parameters = svm_best) %>% 
+  roc_curve(quality, .pred_3:.pred_5) %>% 
+  mutate(model = "Boosted Trees")
+
+autoplot(svm_auc)
+```
+
+
+```{r}
+# 选出最好的惩罚函数在训练集建模
+svm_wfl_final = 
+  svm_wfl %>%
+  finalize_workflow(svm_best) %>% 
+  fit(data = df_train)
+
+svm_train_probs = svm_wfl_final %>%
+  predict(df_train, type = "prob") %>% 
+  bind_cols(df_train %>% dplyr::select(quality)) %>% 
+  bind_cols(predict(C5_wfl_final, df_train))
+
+# 混淆矩阵
+conf_mat(svm_train_probs, quality, .pred_class)
+
+# AUC
+svm_train_AUC = roc_auc(svm_train_probs, quality, .pred_3:.pred_5)
+svm_train_AUC
+# 准确率
+svm_train_accu = accuracy(svm_train_probs,quality,.pred_class)
+svm_train_accu
+# 召回率
+svm_train_rec = recall(svm_train_probs,quality,.pred_class)
+svm_train_rec
+# 精确率
+svm_train_prec = precision(svm_train_probs,quality,.pred_class)
+svm_train_prec
+
+svm_train_metric = 
+  bind_rows(svm_train_accu,svm_train_AUC,
+            svm_train_rec,svm_train_prec) %>% 
+  select(.metric,.estimate)
+```
+
+```{r}
+# 在测试集预测并评估模型性能
+svm_test_probs = svm_wfl_final %>%
+  predict(df_test, type = "prob") %>% 
+  bind_cols(df_test %>% dplyr::select(quality)) %>% 
+  bind_cols(predict(svm_wfl_final, df_test))
+
+# 混淆矩阵
+conf_mat(C5_test_probs, quality, .pred_class)
+
+# AUC
+svm_test_AUC = roc_auc(svm_test_probs, quality, .pred_3:.pred_5)
+svm_test_AUC
+# 准确率
+svm_test_accu = accuracy(svm_test_probs,quality,.pred_class)
+svm_test_accu
+# 召回率
+svm_test_rec = recall(svm_test_probs,quality,.pred_class)
+svm_test_rec
+# 精确率
+svm_test_prec = precision(svm_test_probs,quality,.pred_class)
+svm_test_prec
+
+svm_test_metric = 
+  bind_rows(svm_test_AUC,svm_test_accu,
+            svm_test_rec,svm_test_prec) %>% 
+  select(.metric, .estimate)
+
+svm_metric = inner_join(svm_train_metric,svm_test_metric,
+                        by = ".metric")
+
+
+svm_ROC = roc_curve(svm_test_probs, quality, .pred_3:.pred_5) %>% 
+  mutate(model = "SVM")
+# autoplot(svm_ROC)
+```
+
+
+```{r}
+# 三个机器学习模型在训练集、测试集的评估指标
+bind_metric = 
+  inner_join(rf_metric, inner_join(C5_metric,svm_metric,
+                                   by = ".metric"),
+             by = ".metric") %>% 
+  dplyr::rename(metric = .metric,
+                RF_train= .estimate.x, RF_test = .estimate.y,
+                BT_train= .estimate.x.x, BT_test = .estimate.y.x,
+                SVM_train = .estimate.x.y, SVM_test = .estimate.y.y)
+
+knitr::kable(bind_metric)
+
+# typology = tibble(
+#   col_keys = c(".metric",".estimate.x",".estimate.y",".estimate.x.x",
+#                ".estimate.y.x",".estimate.x.y",".estimate.y.y"),
+#   
+#   type = c("metric",
+#            "Random Forest","Random Forest",
+#            "Boosted Tree","Boosted Tree",
+#            "SVM","SVM"),
+#   
+#   what = c("metric","训练集","测试集","训练集", "测试集","训练集",
+#            "测试集")
+#   )
+# 
+# bind_metric %>% 
+#   flextable() %>% 
+#   set_header_df(mapping = typology, key = "col_keys") %>% 
+#   merge_h(part = "header") %>% 
+#   merge_v(part = "header") %>% 
+#   theme_booktabs() %>% 
+#   autofit() %>% 
+#   fix_border_issues()
+
+```
+　　因为有一个类别只占1%，一个类别不到10%，可见，经过smote算法平衡训练集数据后，预测结果还是并不是很好。经过交叉验证后选出相对较优的超参数后，三个模型依然呈现过拟合的状态，Boosted Tree的训练采用的是算法自己寻找25个参数组合，而且超参数过多，可能并没有找到相对较优的参数；Random Forest和SVM给出超参数格点集，结果也呈现过拟合的状态。
+
+　　正如描述统计所显示，与因变量相关的自变量并不多，而且相关性相对较弱，这是预测效果差一方面的原因。
+
+　　从表中可以看出，三个模型的AUC相差不大，SVM的AUC最大（0.67），其次Boosted Tree（0.66），然后就是Random Forest（0.65），如果
+注重召回率，随机森林相对较好，但是与其他模型差别不大，总体SVM效果最好（AUC最大，且召回率虽然最低，但与其他两个模型相差不大，而准确率最高）。
+
+最后给出三个模型的ROC曲线
+```{r}
+bind_rows(rf_ROC,C5_ROC,svm_ROC) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1.5, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(option = "plasma", end = .6)
+```
+
+
+
+
+
+
+
+
+
